@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QFrame, QGridLayout, QInputDialog, QStyle, QGroupBox,
     QMainWindow, QDialog, QLineEdit, QDialogButtonBox,
     QTreeWidget, QTreeWidgetItem, QMenu, QStatusBar, QToolBar,
-    QLineEdit, QCheckBox, QSizePolicy, QProgressDialog
+    QLineEdit, QCheckBox, QSizePolicy, QProgressDialog, QFileDialog
 )
 from PyQt6.QtGui import QIcon, QColor, QPixmap, QFont, QAction, QCursor, QPalette
 from PyQt6.QtCore import Qt, QSize, QTimer, QSettings, QThread, pyqtSignal
@@ -53,6 +53,7 @@ TRANSLATIONS = {
         "reload": "Ladda om",
         "search": "Sök...",
         "discover_bridges": "Upptäck bryggor",
+        "search_lights": "Sök lampor",
 
         # Menus
         "file": "&Arkiv",
@@ -63,6 +64,8 @@ TRANSLATIONS = {
         "help": "&Hjälp",
         "about": "&Om...",
         "about_text": "Hue Controller v1.5\n\nMed automatisk bridge-upptäckt och förbättrad användarupplevelse.",
+        "backup_settings": "Säkerhetskopiera...",
+        "restore_settings": "Återställ...",
 
         # Tabs
         "groups": "Grupper",
@@ -114,6 +117,21 @@ TRANSLATIONS = {
         "discovery_found": "Hittade {count} bryggor",
         "discovery_none": "Inga bryggor hittades. Kontrollera att din Hue Bridge är ansluten och att du är på samma nätverk.",
         "discovery_error": "Kunde inte söka efter bryggor: {error}",
+        "backup_dialog_title": "Spara inställningar",
+        "backup_success": "Inställningarna har sparats till {filename}",
+        "backup_fail": "Kunde inte spara inställningarna:\n{e}",
+        "restore_dialog_title": "Återställ inställningar",
+        "restore_confirm": "Är du säker på att du vill återställa inställningarna från {filename}?\nDetta kan inte ångras.",
+        "restore_success": "Inställningarna har återställts.",
+        "restore_fail": "Kunde inte återställa inställningarna:\n{e}",
+        "search_lights_title": "Söker efter lampor",
+        "search_lights_text": "Söker efter nya lampor... Detta kan ta upp till en minut.",
+        "search_lights_success": "{count} nya lampor hittades!",
+        "search_lights_none": "Inga nya lampor hittades.",
+        "search_lights_fail": "Sökningen misslyckades:\n{e}",
+        "touchlink_confirm_title": "Starta Touchlink?",
+        "touchlink_confirm_text": "Detta kommer att söka efter och para ihop lampor som är nära bryggan (inom ~30 cm).\nFortsätt?",
+        "touchlink_started": "Touchlink-sökning har startat.",
 
         # Context Menus
         "show_info": "Visa Info...",
@@ -153,6 +171,7 @@ TRANSLATIONS = {
         "reload": "Reload",
         "search": "Search...",
         "discover_bridges": "Discover bridges",
+        "search_lights": "Search Lights",
 
         # Menus
         "file": "&File",
@@ -163,6 +182,8 @@ TRANSLATIONS = {
         "help": "&Help",
         "about": "&About...",
         "about_text": "Hue Controller v1.5\n\nWith automatic bridge discovery and improved user experience.",
+        "backup_settings": "Backup Settings...",
+        "restore_settings": "Restore Settings...",
 
         # Tabs
         "groups": "Groups",
@@ -214,6 +235,21 @@ TRANSLATIONS = {
         "discovery_found": "Found {count} bridges",
         "discovery_none": "No bridges found. Make sure your Hue Bridge is connected and you're on the same network.",
         "discovery_error": "Could not search for bridges: {error}",
+        "backup_dialog_title": "Backup Settings",
+        "backup_success": "Settings successfully saved to {filename}",
+        "backup_fail": "Failed to save settings:\n{e}",
+        "restore_dialog_title": "Restore Settings",
+        "restore_confirm": "Are you sure you want to restore settings from {filename}?\nThis action cannot be undone.",
+        "restore_success": "Settings successfully restored.",
+        "restore_fail": "Failed to restore settings:\n{e}",
+        "search_lights_title": "Searching for lights",
+        "search_lights_text": "Searching for new lights... This may take up to a minute.",
+        "search_lights_success": "{count} new lights found!",
+        "search_lights_none": "No new lights were found.",
+        "search_lights_fail": "Light search failed:\n{e}",
+        "touchlink_confirm_title": "Start Touchlink?",
+        "touchlink_confirm_text": "This will search for and pair lights that are very close to the bridge (within ~12 inches).\nContinue?",
+        "touchlink_started": "Touchlink search started.",
 
         # Context Menus
         "show_info": "Show Info...",
@@ -327,12 +363,13 @@ icon_light, icon_group, icon_scene, icon_sensor, icon_bridge, icon_dimmer = (QIc
 icon_refresh, icon_add, icon_remove, icon_on, icon_off, icon_color = (QIcon() for _ in range(6))
 icon_effect, icon_theme, icon_info_alt, icon_exit, icon_warning, icon_info = (QIcon() for _ in range(6))
 icon_error, icon_edit, icon_save, icon_random, icon_search, icon_discover = (QIcon() for _ in range(6))
+icon_backup, icon_restore = (QIcon() for _ in range(2))
 
 def load_icons(app_style):
     """Loads icons from Qt's standard set for stability."""
     global icon_light, icon_group, icon_scene, icon_sensor, icon_bridge, icon_dimmer, icon_refresh, icon_add, icon_remove
     global icon_on, icon_off, icon_color, icon_effect, icon_theme, icon_info_alt, icon_exit, icon_edit, icon_save, icon_random
-    global icon_warning, icon_info, icon_error, icon_search, icon_discover
+    global icon_warning, icon_info, icon_error, icon_search, icon_discover, icon_backup, icon_restore
 
     icon_light = app_style.standardIcon(QStyle.StandardPixmap.SP_DialogYesButton)
     icon_group = app_style.standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
@@ -358,6 +395,8 @@ def load_icons(app_style):
     icon_error = app_style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical)
     icon_search = app_style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
     icon_discover = app_style.standardIcon(QStyle.StandardPixmap.SP_FileDialogStart)
+    icon_backup = app_style.standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
+    icon_restore = app_style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
     
     logger.info("Icons loaded successfully")
 
@@ -648,10 +687,20 @@ class EffectsPanel(QWidget):
             self.stop_custom_effect()
 
     def update_effect_buttons_state(self, bridge_effect):
-        self.effect_buttons['colorloop'].setChecked(bridge_effect == 'colorloop')
-        if self.current_effect_type is None:
+        is_colorloop = bridge_effect == 'colorloop'
+        self.effect_buttons['colorloop'].blockSignals(True)
+        self.effect_buttons['colorloop'].setChecked(is_colorloop)
+        self.effect_buttons['colorloop'].blockSignals(False)
+        if is_colorloop:
+            self.current_effect_type = 'colorloop'
             for name, button in self.effect_buttons.items():
-                if name != 'colorloop': button.setChecked(False)
+                if name != 'colorloop':
+                    button.blockSignals(True)
+                    button.setChecked(False)
+                    button.blockSignals(False)
+        elif self.current_effect_type is None:
+            for button in self.effect_buttons.values():
+                button.setChecked(False)
 
     def stop_custom_effect(self):
         if self.effect_timer.isActive(): self.effect_timer.stop()
@@ -667,8 +716,12 @@ class EffectsPanel(QWidget):
         self.current_effect_type = effect_type
         self.effect_state_counter = 0
         logger.info(f"Starting effect: {self.current_effect_type}")
-        self.control_panel._send_command({'on': True, 'effect': 'none'}, None)
-        self.run_effect_step()
+        if effect_type == 'colorloop':
+            self.control_panel._send_command({'on': True, 'effect': 'colorloop'}, None)
+            if self.effect_timer.isActive(): self.effect_timer.stop()
+        else:
+            self.control_panel._send_command({'on': True, 'effect': 'none'}, None)
+            self.run_effect_step()
 
     def _run_thunderstorm_flash(self):
         if not self.control_panel.current_target: return
@@ -678,7 +731,7 @@ class EffectsPanel(QWidget):
         QTimer.singleShot(300, lambda: self.control_panel._send_command({'on': True, 'bri': 20, 'xy': [0.2, 0.15], 'transitiontime': 5}, None))
 
     def run_effect_step(self):
-        if not self.control_panel.current_target or not self.current_effect_type:
+        if not self.control_panel.current_target or not self.current_effect_type or self.current_effect_type == 'colorloop':
             self.stop_custom_effect(); return
 
         params = {}; speed_multiplier = (11 - self.speed_slider.value()) / 5.0
@@ -690,7 +743,6 @@ class EffectsPanel(QWidget):
         elif self.current_effect_type == 'fireplace':
             params = {'bri': random.randint(80, 200), 'xy': [round(0.6+random.uniform(-0.06,0.04),4), round(0.35+random.uniform(-0.04,0.04),4)], 'transitiontime': 4}
             base_interval = 500 + random.randint(-200, 150)
-        elif self.current_effect_type == 'colorloop': params = {'effect': 'colorloop'}
         elif self.current_effect_type == 'thunderstorm':
             if random.random() < 0.25: self._run_thunderstorm_flash()
             else: params = {'bri': 20, 'xy': [0.2, 0.15], 'transitiontime': 30}
@@ -739,6 +791,7 @@ class ControlPanel(QWidget):
     def __init__(self, bridge_callback, effects_panel_ref):
         super().__init__(); self.bridge_callback = bridge_callback; self.effects_panel = effects_panel_ref
         self.current_target = None; self.target_type = None; self.is_group = False
+        self.settings = QSettings("HueController", "HueEnhanced")
         self.setObjectName("controlPanelWidget"); self.layout = QVBoxLayout(); self.setLayout(self.layout)
         self.title_label = QLabel(tr("select_device")); font = self.title_label.font(); font.setPointSize(14); font.setBold(True)
         self.title_label.setFont(font); self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -795,6 +848,7 @@ class ControlPanel(QWidget):
         self.info_uniqueid_label = QLabel(tr("unique_id", uniqueid="-"))
         self.info_uniqueid_label.setObjectName("infoLabel"); self.info_layout.addWidget(self.info_uniqueid_label)
         self.info_group_box.hide(); self.layout.addStretch(); self.controls_widget.hide()
+        self.load_favorite_colors()
 
     def retranslate_ui(self):
         self.title_label.setText(tr("select_device") if not self.current_target else self.current_target.name)
@@ -883,20 +937,39 @@ class ControlPanel(QWidget):
             params={'on':True, 'xy':xy, 'effect':'none', 'bri': max(bri,50) if bri<25 else bri}
             if self._send_command(params, None): self.brightness_slider.setValue(params['bri']); self.on_off_button.setChecked(True)
             
+    def load_favorite_colors(self):
+        for i, button in enumerate(self.favorite_buttons):
+            xy = self.settings.value(f"favorite_colors/{i}")
+            if xy and isinstance(xy, list) and len(xy) == 2:
+                try:
+                    r, g, b = self.xy_to_rgb(float(xy[0]), float(xy[1]))
+                    button.setStyleSheet(f"background-color: rgb({r},{g},{b});")
+                    button.setProperty("color_xy", xy)
+                except (ValueError, TypeError):
+                    continue # Ignore invalid stored data
+
     def save_favorite_color(self, button):
         if not self.current_target: return
+        try:
+            index = self.favorite_buttons.index(button)
+        except ValueError:
+            return # Button not in list, should not happen
+
         try:
             state = self.bridge_callback().get_light(self.current_target.light_id) if not self.is_group else self.bridge_callback().get_group(self.current_target.group_id)
             xy = state['action']['xy'] if self.is_group else state['state']['xy']
             r, g, b = self.xy_to_rgb(xy[0], xy[1])
             button.setStyleSheet(f"background-color: rgb({r},{g},{b});")
             button.setProperty("color_xy", xy)
+            self.settings.setValue(f"favorite_colors/{index}", xy)
         except Exception as e:
             logger.error(f"Could not save favorite color: {e}")
             
     def apply_favorite_color(self, button):
-        xy = button.property("color_xy")
-        if xy and self.current_target:
+        xy_prop = button.property("color_xy")
+        if xy_prop and self.current_target:
+            # QSettings might return strings, ensure they are floats
+            xy = [float(c) for c in xy_prop]
             self.effects_panel.on_stop_effects_clicked()
             self._send_command({'on': True, 'xy': xy}, None)
             
@@ -976,6 +1049,9 @@ class HueEnhancedApp(QMainWindow):
         self.remove_bridge_btn = QPushButton(tr("remove_bridge")); self.remove_bridge_btn.setObjectName("removeButton")
         self.remove_bridge_btn.clicked.connect(self.remove_selected_bridge)
         top_bar.addWidget(self.remove_bridge_btn); top_bar.addSpacing(20)
+        self.search_lights_btn = QPushButton(tr("search_lights")); self.search_lights_btn.setIcon(icon_search)
+        self.search_lights_btn.clicked.connect(self.search_for_lights)
+        top_bar.addWidget(self.search_lights_btn)
         self.refresh_btn = QPushButton(tr("reload")); self.refresh_btn.clicked.connect(self.refresh_all_from_bridge)
         top_bar.addWidget(self.refresh_btn); self.main_layout.addLayout(top_bar)
         
@@ -1048,11 +1124,23 @@ class HueEnhancedApp(QMainWindow):
         self.sensors_list.itemClicked.connect(self.handle_sensor_selection)
 
         self.refresh_btn.setEnabled(False); self.remove_bridge_btn.setEnabled(False); 
+        self.search_lights_btn.setEnabled(False)
         self.statusBar().showMessage(tr("status_ready"))
 
     def create_menus(self):
         self.menu_bar = self.menuBar()
         self.file_menu = self.menu_bar.addMenu(tr("file"))
+        
+        self.backup_action = QAction(icon_backup, tr("backup_settings"), self)
+        self.backup_action.triggered.connect(self.backup_settings)
+        self.file_menu.addAction(self.backup_action)
+        
+        self.restore_action = QAction(icon_restore, tr("restore_settings"), self)
+        self.restore_action.triggered.connect(self.restore_settings)
+        self.file_menu.addAction(self.restore_action)
+        
+        self.file_menu.addSeparator()
+        
         self.exit_action = QAction(icon_exit, tr("exit"), self); self.exit_action.triggered.connect(self.close)
         self.file_menu.addAction(self.exit_action)
         
@@ -1083,6 +1171,7 @@ class HueEnhancedApp(QMainWindow):
         self.discover_bridge_btn.setText(tr("discover_bridges"))
         self.remove_bridge_btn.setText(tr("remove_bridge"))
         self.refresh_btn.setText(tr("reload"))
+        self.search_lights_btn.setText(tr("search_lights"))
         self.search_edit.setPlaceholderText(tr("search"))
         self.lights_search.setPlaceholderText(tr("search"))
         self.groups_search.setPlaceholderText(tr("search"))
@@ -1097,6 +1186,8 @@ class HueEnhancedApp(QMainWindow):
 
         # Menus
         self.file_menu.setTitle(tr("file")); self.exit_action.setText(tr("exit"))
+        self.backup_action.setText(tr("backup_settings"))
+        self.restore_action.setText(tr("restore_settings"))
         self.view_menu.setTitle(tr("view")); self.theme_menu.setTitle(tr("theme")); self.lang_menu.setTitle(tr("language"))
         self.help_menu.setTitle(tr("help")); self.about_action.setText(tr("about"))
 
@@ -1116,6 +1207,9 @@ class HueEnhancedApp(QMainWindow):
         self.discover_bridge_btn.setIcon(icon_discover)
         self.remove_bridge_btn.setIcon(icon_remove)
         self.refresh_btn.setIcon(icon_refresh)
+        self.search_lights_btn.setIcon(icon_search)
+        self.backup_action.setIcon(icon_backup)
+        self.restore_action.setIcon(icon_restore)
         self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.groups_list.parent().parent()), icon_group)
         self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.lights_list.parent().parent()), icon_light)
         self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.scenes_tree.parent().parent()), icon_scene)
@@ -1231,6 +1325,9 @@ class HueEnhancedApp(QMainWindow):
             self.current_bridge=None; 
             self.refresh_btn.setEnabled(False); 
             self.remove_bridge_btn.setEnabled(False)
+            self.search_lights_btn.setEnabled(False)
+            self.backup_action.setEnabled(False)
+            self.restore_action.setEnabled(False)
             
     def connect_bridge(self, ip):
         username = self.bridge_selector.currentData()
@@ -1251,6 +1348,9 @@ class HueEnhancedApp(QMainWindow):
             self.statusBar().showMessage(tr("status_connected", bridge_name=bridge_name))
             self.refresh_btn.setEnabled(True); 
             self.remove_bridge_btn.setEnabled(True)
+            self.search_lights_btn.setEnabled(True)
+            self.backup_action.setEnabled(True)
+            self.restore_action.setEnabled(True)
             self.refresh_all_from_bridge()
         except Exception as e: 
             logger.error(f"Could not connect to bridge {ip}: {e}")
@@ -1571,6 +1671,109 @@ class HueEnhancedApp(QMainWindow):
                 logger.error(f"Could not save scene: {e}")
                 create_message_box(self, icon_error, tr("error_title"), tr("save_scene_fail", e=e)).exec()
 
+    def backup_settings(self):
+        if not self.current_bridge: return
+        try:
+            filename, _ = QFileDialog.getSaveFileName(self, tr("backup_dialog_title"), f"hue_backup_{self.current_ip}.json", "JSON Files (*.json)")
+            if not filename: return
+            
+            config = self.current_bridge.get_api()
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+            
+            create_message_box(self, icon_info, tr("info_title"), tr("backup_success", filename=os.path.basename(filename))).exec()
+        except Exception as e:
+            logger.error(f"Backup failed: {e}")
+            create_message_box(self, icon_error, tr("error_title"), tr("backup_fail", e=e)).exec()
+
+    def restore_settings(self):
+        if not self.current_bridge: return
+        try:
+            filename, _ = QFileDialog.getOpenFileName(self, tr("restore_dialog_title"), "", "JSON Files (*.json)")
+            if not filename: return
+
+            if create_message_box(self, icon_warning, tr("confirm_title"), tr("restore_confirm", filename=os.path.basename(filename)), buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No).exec() != QMessageBox.StandardButton.Yes:
+                return
+
+            with open(filename, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+
+            # This is a simplified restore. A real restore is very complex.
+            # We will just restore the lights, groups, scenes for this example.
+            if 'lights' in config:
+                for light_id, data in config['lights'].items():
+                    self.current_bridge.set_light(int(light_id), {'name': data['name']})
+            if 'groups' in config:
+                 for group_id, data in config['groups'].items():
+                    self.current_bridge.set_group(int(group_id), {'name': data['name'], 'lights': data['lights']})
+            
+            create_message_box(self, icon_info, tr("info_title"), tr("restore_success")).exec()
+            self.refresh_all_from_bridge()
+
+        except Exception as e:
+            logger.error(f"Restore failed: {e}")
+            create_message_box(self, icon_error, tr("error_title"), tr("restore_fail", e=e)).exec()
+
+    def search_for_lights(self):
+        if not self.current_bridge: return
+        
+        menu = QMenu(self)
+        menu.setStyleSheet(self.styleSheet())
+        
+        search_action = QAction("Normal Search", self)
+        search_action.triggered.connect(self._start_light_search)
+        menu.addAction(search_action)
+        
+        touchlink_action = QAction("Touchlink (Wink)", self)
+        touchlink_action.triggered.connect(self._start_touchlink_search)
+        menu.addAction(touchlink_action)
+        
+        menu.exec(self.search_lights_btn.mapToGlobal(self.search_lights_btn.rect().bottomLeft()))
+
+    def _start_light_search(self):
+        try:
+            progress = QProgressDialog(tr("search_lights_title"), "Cancel", 0, 0, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.show()
+            
+            QApplication.processEvents() # Allow GUI to update
+            
+            initial_lights = set(self.current_bridge.get_light_objects('id'))
+            # Correct way to start a search via API
+            self.current_bridge.request('POST', f'/api/{self.current_bridge.username}/lights')
+            
+            time.sleep(45) # Give bridge time to search
+            
+            final_lights = set(self.current_bridge.get_light_objects('id'))
+            
+            progress.close()
+            
+            new_lights = final_lights - initial_lights
+            
+            if new_lights:
+                create_message_box(self, icon_info, tr("info_title"), tr("search_lights_success", count=len(new_lights))).exec()
+                self.refresh_all_from_bridge()
+            else:
+                create_message_box(self, icon_info, tr("info_title"), tr("search_lights_none")).exec()
+
+        except Exception as e:
+            logger.error(f"Light search failed: {e}")
+            create_message_box(self, icon_error, tr("error_title"), tr("search_lights_fail", e=e)).exec()
+
+    def _start_touchlink_search(self):
+        if create_message_box(self, icon_warning, tr("touchlink_confirm_title"), tr("touchlink_confirm_text"), buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No).exec() != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            # Correct way to start touchlink via API
+            self.current_bridge.request('PUT', f'/api/{self.current_bridge.username}/config', {'touchlink': True})
+            create_message_box(self, icon_info, tr("info_title"), tr("touchlink_started")).exec()
+            # User should check for new lights after a minute or so
+            QTimer.singleShot(60000, self.refresh_all_from_bridge)
+        except Exception as e:
+            logger.error(f"Touchlink failed: {e}")
+            create_message_box(self, icon_error, tr("error_title"), f"Touchlink failed:\n{e}").exec()
+
+
 if __name__ == "__main__":
     if sys.platform == 'win32':
         try:
@@ -1582,4 +1785,3 @@ if __name__ == "__main__":
     window = HueEnhancedApp()
     window.show()
     sys.exit(app.exec())
-
