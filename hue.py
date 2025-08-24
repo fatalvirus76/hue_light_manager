@@ -5,19 +5,32 @@ import json
 import requests
 import math
 import time
-import random # For effects
-from datetime import datetime # For timestamps
+import random
+import logging
+from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QLabel,
     QComboBox, QColorDialog, QListWidget, QListWidgetItem,
     QHBoxLayout, QTabWidget, QSlider, QMessageBox, QSplitter,
     QFrame, QGridLayout, QInputDialog, QStyle, QGroupBox,
     QMainWindow, QDialog, QLineEdit, QDialogButtonBox,
-    QTreeWidget, QTreeWidgetItem, QMenu, QStatusBar
+    QTreeWidget, QTreeWidgetItem, QMenu, QStatusBar, QToolBar,
+    QLineEdit, QCheckBox, QSizePolicy, QProgressDialog
 )
-from PyQt6.QtGui import QIcon, QColor, QPixmap, QFont, QAction, QCursor
-from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtGui import QIcon, QColor, QPixmap, QFont, QAction, QCursor, QPalette
+from PyQt6.QtCore import Qt, QSize, QTimer, QSettings, QThread, pyqtSignal
 from phue import Bridge, PhueRegistrationException
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("hue_controller.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("HueController")
 
 # --- Internationalization (i18n) ---
 TRANSLATIONS = {
@@ -38,6 +51,8 @@ TRANSLATIONS = {
         "add_bridge": "Lägg till",
         "remove_bridge": "Ta bort",
         "reload": "Ladda om",
+        "search": "Sök...",
+        "discover_bridges": "Upptäck bryggor",
 
         # Menus
         "file": "&Arkiv",
@@ -47,7 +62,7 @@ TRANSLATIONS = {
         "language": "&Språk",
         "help": "&Hjälp",
         "about": "&Om...",
-        "about_text": "Hue Controller v1.4",
+        "about_text": "Hue Controller v1.5\n\nMed automatisk bridge-upptäckt och förbättrad användarupplevelse.",
 
         # Tabs
         "groups": "Grupper",
@@ -70,6 +85,8 @@ TRANSLATIONS = {
         "information": "Information",
         "model": "Modell: {model}",
         "type": "Typ: {type}",
+        "software": "Mjukvara: {swversion}",
+        "unique_id": "Unikt ID: {uniqueid}",
 
         # Effects Panel
         "dynamic_effects": "Dynamiska Effekter",
@@ -93,6 +110,10 @@ TRANSLATIONS = {
         "save_scene_prompt": "Ange namn för ny scen för gruppen '{group_name}':",
         "save_scene_success": "Scenen '{scene_name}' har sparats.",
         "save_scene_fail": "Kunde inte spara scen:\n{e}",
+        "discovery_title": "Bridge-upptäckt",
+        "discovery_found": "Hittade {count} bryggor",
+        "discovery_none": "Inga bryggor hittades. Kontrollera att din Hue Bridge är ansluten och att du är på samma nätverk.",
+        "discovery_error": "Kunde inte söka efter bryggor: {error}",
 
         # Context Menus
         "show_info": "Visa Info...",
@@ -106,6 +127,12 @@ TRANSLATIONS = {
         "create_group_title": "Skapa Ny Grupp",
         "group_name": "Gruppnamn:",
         "select_lights": "Välj lampor:",
+        
+        # Status
+        "status_loading": "Laddar...",
+        "status_ready": "Klar",
+        "status_connecting": "Ansluter till {ip}...",
+        "status_discovering": "Söker efter bryggor...",
     },
     "en": {
         # General
@@ -124,6 +151,8 @@ TRANSLATIONS = {
         "add_bridge": "Add",
         "remove_bridge": "Remove",
         "reload": "Reload",
+        "search": "Search...",
+        "discover_bridges": "Discover bridges",
 
         # Menus
         "file": "&File",
@@ -133,7 +162,7 @@ TRANSLATIONS = {
         "language": "&Language",
         "help": "&Help",
         "about": "&About...",
-        "about_text": "Hue Controller v1.4",
+        "about_text": "Hue Controller v1.5\n\nWith automatic bridge discovery and improved user experience.",
 
         # Tabs
         "groups": "Groups",
@@ -156,6 +185,8 @@ TRANSLATIONS = {
         "information": "Information",
         "model": "Model: {model}",
         "type": "Type: {type}",
+        "software": "Software: {swversion}",
+        "unique_id": "Unique ID: {uniqueid}",
 
         # Effects Panel
         "dynamic_effects": "Dynamic Effects",
@@ -179,6 +210,10 @@ TRANSLATIONS = {
         "save_scene_prompt": "Enter name for new scene for group '{group_name}':",
         "save_scene_success": "Scene '{scene_name}' has been saved.",
         "save_scene_fail": "Could not save scene:\n{e}",
+        "discovery_title": "Bridge Discovery",
+        "discovery_found": "Found {count} bridges",
+        "discovery_none": "No bridges found. Make sure your Hue Bridge is connected and you're on the same network.",
+        "discovery_error": "Could not search for bridges: {error}",
 
         # Context Menus
         "show_info": "Show Info...",
@@ -192,6 +227,12 @@ TRANSLATIONS = {
         "create_group_title": "Create New Group",
         "group_name": "Group name:",
         "select_lights": "Select lights:",
+        
+        # Status
+        "status_loading": "Loading...",
+        "status_ready": "Ready",
+        "status_connecting": "Connecting to {ip}...",
+        "status_discovering": "Discovering bridges...",
     }
 }
 
@@ -206,52 +247,76 @@ def tr(key, **kwargs):
         try:
             return translation.format(**kwargs)
         except (KeyError, IndexError):
-            return key # Return key if formatting fails
+            return key  # Return key if formatting fails
     return translation
 
-# --- Settings and Bridge Manager ---
-# This class replaces the need for a separate hue_manager.py file
-class HueManager:
-    """Manages saving/loading of bridge configurations and UI settings."""
-    def __init__(self, config_file='hue_bridges.json', settings_file='hue_settings.json'):
-        self.config_file = config_file
-        self.settings_file = settings_file
-        self.bridges = self._load_json(self.config_file, {})
-        self.settings = self._load_json(self.settings_file, {})
+# --- Bridge Discovery Thread ---
+class BridgeDiscoveryThread(QThread):
+    discovered = pyqtSignal(list)
+    error = pyqtSignal(str)
 
-    def _load_json(self, file, default):
-        """Safely loads a JSON file."""
+    def __init__(self):
+        super().__init__()
+
+    def run(self):
         try:
-            if os.path.exists(file):
-                with open(file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return default # Return default value if file is corrupt or unreadable
-        return default
+            # Try the official Hue discovery service first
+            discovery_url = "https://discovery.meethue.com/"
+            response = requests.get(discovery_url, timeout=10)
+            bridges = response.json()
+            
+            if bridges:
+                self.discovered.emit([bridge['internalipaddress'] for bridge in bridges])
+                return
+            
+            # Fallback to local network discovery if official service fails
+            self.discovered.emit(self.discover_local())
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Bridge discovery failed: {e}")
+            self.error.emit(str(e))
+        except Exception as e:
+            logger.error(f"Unexpected error during bridge discovery: {e}")
+            self.error.emit(str(e))
 
-    def _save_json(self, file, data):
-        """Saves data to a JSON file."""
-        try:
-            with open(file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=4)
-        except IOError as e:
-            print(f"Error saving {file}: {e}")
-
-    def add_bridge(self, ip, username):
-        self.bridges[ip] = {'username': username}
-        self._save_json(self.config_file, self.bridges)
-
-    def remove_bridge(self, ip):
-        if ip in self.bridges:
-            del self.bridges[ip]
-            self._save_json(self.config_file, self.bridges)
-
-    def get_setting(self, key, default=None):
-        return self.settings.get(key, default)
-
-    def save_setting(self, key, value):
-        self.settings[key] = value
-        self._save_json(self.settings_file, self.settings)
+    def discover_local(self):
+        """Fallback method to discover bridges on local network"""
+        import socket
+        from netaddr import IPNetwork
+        
+        # Try common network ranges
+        potential_ranges = [
+            "192.168.0.0/24", 
+            "192.168.1.0/24",
+            "192.168.2.0/24",
+            "10.0.0.0/24",
+            "10.0.1.0/24"
+        ]
+        
+        found_bridges = []
+        
+        for network_range in potential_ranges:
+            try:
+                for ip in IPNetwork(network_range):
+                    try:
+                        # Check if port 80 is open (HTTP)
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(0.1)
+                        result = sock.connect_ex((str(ip), 80))
+                        sock.close()
+                        
+                        if result == 0:
+                            # Check if it's a Hue bridge by looking for the description.xml
+                            desc_url = f"http://{ip}/description.xml"
+                            desc_response = requests.get(desc_url, timeout=1)
+                            if "Philips hue bridge" in desc_response.text:
+                                found_bridges.append(str(ip))
+                    except:
+                        continue
+            except:
+                continue
+                
+        return found_bridges
 
 # --- Icon Management ---
 ICON_DIR = "icons"
@@ -261,13 +326,13 @@ DEFAULT_ICON_SIZE = QSize(16, 16)
 icon_light, icon_group, icon_scene, icon_sensor, icon_bridge, icon_dimmer = (QIcon() for _ in range(6))
 icon_refresh, icon_add, icon_remove, icon_on, icon_off, icon_color = (QIcon() for _ in range(6))
 icon_effect, icon_theme, icon_info_alt, icon_exit, icon_warning, icon_info = (QIcon() for _ in range(6))
-icon_error, icon_edit, icon_save, icon_random = (QIcon() for _ in range(4))
+icon_error, icon_edit, icon_save, icon_random, icon_search, icon_discover = (QIcon() for _ in range(6))
 
 def load_icons(app_style):
     """Loads icons from Qt's standard set for stability."""
     global icon_light, icon_group, icon_scene, icon_sensor, icon_bridge, icon_dimmer, icon_refresh, icon_add, icon_remove
     global icon_on, icon_off, icon_color, icon_effect, icon_theme, icon_info_alt, icon_exit, icon_edit, icon_save, icon_random
-    global icon_warning, icon_info, icon_error
+    global icon_warning, icon_info, icon_error, icon_search, icon_discover
 
     icon_light = app_style.standardIcon(QStyle.StandardPixmap.SP_DialogYesButton)
     icon_group = app_style.standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
@@ -291,8 +356,10 @@ def load_icons(app_style):
     icon_warning = app_style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
     icon_info = app_style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
     icon_error = app_style.standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical)
-    print("Icons loaded.")
-
+    icon_search = app_style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
+    icon_discover = app_style.standardIcon(QStyle.StandardPixmap.SP_FileDialogStart)
+    
+    logger.info("Icons loaded successfully")
 
 # --- Qt Style Sheets (Themes) ---
 def create_container_styles(bg_light, border, accent_yellow, fg_color, bg_main):
@@ -306,6 +373,7 @@ def create_container_styles(bg_light, border, accent_yellow, fg_color, bg_main):
     QMenu::item:selected {{ background-color: {accent_yellow}; color: {bg_main}; }}
     QMenu::separator {{ height: 1px; background-color: {border}; margin: 4px 0; }}
     """
+
 NORD_DARK_STYLESHEET = """
 QWidget { background-color: #2E3440; color: #ECEFF4; font-family: Segoe UI, Arial, sans-serif; font-size: 10pt; }
 QPushButton { background-color: #88C0D0; color: #2E3440; border: 1px solid #434C5E; padding: 8px 12px; border-radius: 4px; min-width: 80px; }
@@ -328,7 +396,9 @@ QSlider::groove:horizontal { background: #3B4252; }
 QSlider::handle:horizontal { background: #88C0D0; }
 QSlider::sub-page:horizontal { background: #A3BE8C; }
 QStatusBar { background-color: #3B4252; border-top: 1px solid #434C5E; }
+QLineEdit { background-color: #3B4252; border: 1px solid #434C5E; padding: 5px; border-radius: 3px; color: #ECEFF4; }
 """ + create_container_styles("#3B4252", "#434C5E", "#EBCB8B", "#ECEFF4", "#2E3440")
+
 LIGHT_STYLESHEET = """
 QWidget { background-color: #f0f0f0; color: #000000; font-family: Segoe UI, Arial, sans-serif; font-size: 10pt; }
 QPushButton { background-color: #dcdcdc; border: 1px solid #b0b0b0; padding: 8px 12px; border-radius: 4px; }
@@ -351,7 +421,9 @@ QSlider::groove:horizontal { background: #e0e0e0; }
 QSlider::handle:horizontal { background: #0078d7; }
 QSlider::sub-page:horizontal { background: #90ee90; }
 QStatusBar { background-color: #e8e8e8; border-top: 1px solid #c0c0c0; }
+QLineEdit { background-color: #ffffff; border: 1px solid #b0b0b0; padding: 5px; border-radius: 3px; }
 """ + create_container_styles("#f8f8f8", "#c0c0c0", "#0078d7", "#000000", "#ffffff")
+
 DRACULA_STYLESHEET = """
 QWidget { background-color: #282a36; color: #f8f8f2; font-family: Consolas, Courier New, monospace; }
 QPushButton { background-color: #6272a4; border: 1px solid #44475a; padding: 8px 12px; border-radius: 4px; }
@@ -374,7 +446,9 @@ QSlider::groove:horizontal { background: #44475a; }
 QSlider::handle:horizontal { background: #bd93f9; }
 QSlider::sub-page:horizontal { background: #50fa7b; }
 QStatusBar { background-color: #44475a; border-top: 1px solid #6272a4; }
+QLineEdit { background-color: #44475a; border: 1px solid #6272a4; padding: 5px; border-radius: 3px; color: #f8f8f2; }
 """ + create_container_styles("#44475a", "#6272a4", "#ff79c6", "#f8f8f2", "#282a36")
+
 MATRIX_STYLESHEET = """
 QWidget { background-color: #000000; color: #00FF41; font-family: 'Courier New', Courier, monospace; font-size: 11pt; }
 QPushButton { background-color: #0D2A13; border: 1px solid #00FF41; padding: 8px 12px; border-radius: 0px; }
@@ -398,7 +472,9 @@ QSlider::groove:horizontal { height: 2px; background: #0D2A13; }
 QSlider::handle:horizontal { background: #00FF41; width: 12px; height: 20px; margin: -10px 0; }
 QSlider::sub-page:horizontal { background: #00FF41; }
 QStatusBar { background-color: #0D2A13; border-top: 1px solid #00FF41; }
+QLineEdit { background-color: #051007; border: 1px solid #00FF41; padding: 5px; border-radius: 0px; color: #00FF41; }
 """ + create_container_styles("#0D2A13", "#00FF41", "#5CFF8B", "#00FF41", "#000000")
+
 SYNTHWAVE_STYLESHEET = """
 QWidget { background-color: #261B3E; color: #F0F0F0; font-family: 'Lucida Console', Monaco, monospace; }
 QPushButton { background-color: #4A2F6D; border: 1px solid #FF00FF; padding: 8px 12px; border-radius: 8px; }
@@ -421,9 +497,16 @@ QSlider::groove:horizontal { background: #3A2755; }
 QSlider::handle:horizontal { background: #00FFFF; }
 QSlider::sub-page:horizontal { background: #FFFF00; }
 QStatusBar { background-color: #4A2F6D; border-top: 1px solid #FF00FF; }
+QLineEdit { background-color: #3A2755; border: 1px solid #FF00FF; padding: 5px; border-radius: 5px; color: #F0F0F0; }
 """ + create_container_styles("#4A2F6D", "#FF00FF", "#FFFF00", "#F0F0F0", "#261B3E")
 
-THEMES = { "Nord Dark": NORD_DARK_STYLESHEET, "Light": LIGHT_STYLESHEET, "Dracula": DRACULA_STYLESHEET, "Matrix": MATRIX_STYLESHEET, "Synthwave": SYNTHWAVE_STYLESHEET }
+THEMES = { 
+    "Nord Dark": NORD_DARK_STYLESHEET, 
+    "Light": LIGHT_STYLESHEET, 
+    "Dracula": DRACULA_STYLESHEET, 
+    "Matrix": MATRIX_STYLESHEET, 
+    "Synthwave": SYNTHWAVE_STYLESHEET 
+}
 
 def create_message_box(parent, icon, title, text, informative_text="", buttons=QMessageBox.StandardButton.Ok):
     msg_box = QMessageBox(parent)
@@ -448,13 +531,17 @@ class GroupEditorDialog(QDialog):
         self.button_box.accepted.connect(self.accept); self.button_box.rejected.connect(self.reject)
         self.layout.addWidget(self.button_box); self.populate_lights()
         if self.existing_group: self.load_existing_group_data()
+        
     def populate_lights(self):
         try:
             for light in sorted(self.bridge.get_light_objects('list'), key=lambda l: l.name.lower()):
                 item = QListWidgetItem(light.name); item.setData(Qt.ItemDataRole.UserRole, light.light_id)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable); item.setCheckState(Qt.CheckState.Unchecked)
                 self.lights_list_widget.addItem(item)
-        except Exception as e: create_message_box(self, icon_error, tr("error_title"), f"Could not fetch lights:\n{e}").exec()
+        except Exception as e: 
+            logger.error(f"Could not fetch lights: {e}")
+            create_message_box(self, icon_error, tr("error_title"), f"Could not fetch lights:\n{e}").exec()
+            
     def load_existing_group_data(self):
         self.name_edit.setText(self.existing_group.name)
         group_light_ids = [str(lid) for lid in self.existing_group.lights]
@@ -462,6 +549,7 @@ class GroupEditorDialog(QDialog):
             item = self.lights_list_widget.item(i)
             if str(item.data(Qt.ItemDataRole.UserRole)) in group_light_ids:
                 item.setCheckState(Qt.CheckState.Checked)
+                
     def get_selected_data(self):
         name = self.name_edit.text().strip(); selected_light_ids = []
         for i in range(self.lights_list_widget.count()):
@@ -569,7 +657,7 @@ class EffectsPanel(QWidget):
         if self.effect_timer.isActive(): self.effect_timer.stop()
         if self.control_panel.current_target:
             self.control_panel._send_command({'effect': 'none'}, None)
-        print(f"Stopped effect: {self.current_effect_type}")
+        logger.info(f"Stopped effect: {self.current_effect_type}")
         self.current_effect_type = None
         for button in self.effect_buttons.values():
             button.blockSignals(True); button.setChecked(False); button.blockSignals(False)
@@ -578,7 +666,7 @@ class EffectsPanel(QWidget):
         if not self.control_panel.current_target: return
         self.current_effect_type = effect_type
         self.effect_state_counter = 0
-        print(f"Starting effect: {self.current_effect_type}")
+        logger.info(f"Starting effect: {self.current_effect_type}")
         self.control_panel._send_command({'on': True, 'effect': 'none'}, None)
         self.run_effect_step()
 
@@ -702,6 +790,10 @@ class ControlPanel(QWidget):
         self.info_model_label = QLabel(tr("model", model="-")); self.info_model_label.setObjectName("infoLabel")
         self.info_layout.addWidget(self.info_model_label); self.info_type_label = QLabel(tr("type", type="-"))
         self.info_type_label.setObjectName("infoLabel"); self.info_layout.addWidget(self.info_type_label)
+        self.info_sw_label = QLabel(tr("software", swversion="-"))
+        self.info_sw_label.setObjectName("infoLabel"); self.info_layout.addWidget(self.info_sw_label)
+        self.info_uniqueid_label = QLabel(tr("unique_id", uniqueid="-"))
+        self.info_uniqueid_label.setObjectName("infoLabel"); self.info_layout.addWidget(self.info_uniqueid_label)
         self.info_group_box.hide(); self.layout.addStretch(); self.controls_widget.hide()
 
     def retranslate_ui(self):
@@ -722,7 +814,7 @@ class ControlPanel(QWidget):
         if not bridge or not self.current_target: self.title_label.setText(tr("select_device")); self.controls_widget.hide(); return
         self.is_group = self.target_type == 'group'
         try:
-            is_on=False; bri=128; color_capable=False; effect='none'; model='-'; l_type='-'; current_xy = [0.3127, 0.3290]
+            is_on=False; bri=128; color_capable=False; effect='none'; model='-'; l_type='-'; swversion='-'; uniqueid='-'; current_xy = [0.3127, 0.3290]
             if self.is_group:
                 name = self.current_target.name; state = bridge.get_group(self.current_target.group_id)
                 is_on = state.get('state', {}).get('any_on', False); bri = state.get('action', {}).get('bri', 128)
@@ -731,19 +823,23 @@ class ControlPanel(QWidget):
             else:
                 name = self.current_target.name; info = bridge.get_light(self.current_target.light_id)
                 if info:
-                    model=info.get('modelid','-'); l_type=info.get('type','-')
+                    model=info.get('modelid','-'); l_type=info.get('type','-'); swversion=info.get('swversion','-'); uniqueid=info.get('uniqueid','-')
                     if 'state' in info: is_on=info['state'].get('on',False); bri=info['state'].get('bri',128); effect=info['state'].get('effect','none'); color_capable='xy' in info['state']; current_xy = info['state'].get('xy', current_xy)
             self.title_label.setText(name); self.color_button.setEnabled(color_capable); self.random_color_button.setEnabled(color_capable)
             self.on_off_button.setChecked(is_on); self.update_on_off_button_style(is_on)
             self.brightness_slider.setValue(bri); self.brightness_value_label.setText(str(bri))
             self.effects_panel.update_effect_buttons_state(effect)
             self.info_model_label.setText(tr("model", model=model)); self.info_type_label.setText(tr("type", type=l_type))
+            self.info_sw_label.setText(tr("software", swversion=swversion)); self.info_uniqueid_label.setText(tr("unique_id", uniqueid=uniqueid))
             self.info_group_box.show(); self.controls_widget.show()
         except Exception as e:
+            logger.error(f"Could not fetch status: {e}")
             create_message_box(self, icon_warning, tr("error_title"), f"Could not fetch status:\n{e}").exec()
+            
     def update_on_off_button_style(self, is_on):
         self.on_off_button.setText(tr("power_off") if is_on else tr("power_on")); self.on_off_button.setIcon(icon_off if is_on else icon_on)
         self.on_off_button.setProperty("onState", is_on); self.on_off_button.style().unpolish(self.on_off_button); self.on_off_button.style().polish(self.on_off_button)
+        
     def _send_command(self, cmd, val):
         bridge = self.bridge_callback()
         if not bridge or not self.current_target: return False
@@ -753,24 +849,31 @@ class ControlPanel(QWidget):
             if self.is_group: bridge.set_group(id, params)
             else: bridge.set_light(id, params)
             return True
-        except Exception as e: print(f"ERROR: {e}"); return False
+        except Exception as e: 
+            logger.error(f"Command failed: {e}")
+            return False
+            
     def toggle_power_state(self, c):
         if not self.current_target: return
         self.effects_panel.on_stop_effects_clicked(); self.update_on_off_button_style(c)
         if self._send_command('on', c) and c and self.brightness_slider.value()==0: self._send_command('bri', 1); self.brightness_slider.setValue(1)
+        
     def set_brightness_released(self):
         if not self.current_target: return
         v = self.brightness_slider.value()
         if self._send_command('bri', v) and v>0 and not self.on_off_button.isChecked():
             if self._send_command('on', True): self.on_off_button.setChecked(True)
+            
     def set_brightness_preset(self, percentage):
         value = int(254 * (percentage / 100.0))
         self.brightness_slider.setValue(value)
         self.set_brightness_released()
+        
     def set_random_color(self):
         if not self.current_target: return
         xy = [round(random.random(), 4), round(random.random(), 4)]
         self._send_command({'on': True, 'xy': xy}, None)
+        
     def select_color(self):
         if not self.current_target: return
         self.effects_panel.on_stop_effects_clicked()
@@ -779,6 +882,7 @@ class ControlPanel(QWidget):
             r,g,b,_=color.getRgb(); xy=self.rgb_to_xy(r,g,b); bri=self.brightness_slider.value()
             params={'on':True, 'xy':xy, 'effect':'none', 'bri': max(bri,50) if bri<25 else bri}
             if self._send_command(params, None): self.brightness_slider.setValue(params['bri']); self.on_off_button.setChecked(True)
+            
     def save_favorite_color(self, button):
         if not self.current_target: return
         try:
@@ -788,16 +892,19 @@ class ControlPanel(QWidget):
             button.setStyleSheet(f"background-color: rgb({r},{g},{b});")
             button.setProperty("color_xy", xy)
         except Exception as e:
-            print(f"Could not save favorite color: {e}")
+            logger.error(f"Could not save favorite color: {e}")
+            
     def apply_favorite_color(self, button):
         xy = button.property("color_xy")
         if xy and self.current_target:
             self.effects_panel.on_stop_effects_clicked()
             self._send_command({'on': True, 'xy': xy}, None)
+            
     def rgb_to_xy(self,r,g,b):
         r,g,b=(x/255.0 for x in (r,g,b)); r=((r+0.055)/1.055)**2.4 if r>0.04045 else r/12.92; g=((g+0.055)/1.055)**2.4 if g>0.04045 else g/12.92; b=((b+0.055)/1.055)**2.4 if b>0.04045 else b/12.92
         X=r*0.664511+g*0.154324+b*0.162028; Y=r*0.283881+g*0.668433+b*0.047685; Z=r*0.000088+g*0.072310+b*0.986039
         t=X+Y+Z; return [round(X/t,4),round(Y/t,4)] if t>0 else [0.3127,0.3290]
+        
     def xy_to_rgb(self, x, y, bri=254):
         Y=bri/254.0; X=(Y/y)*x; Z=(Y/y)*(1-x-y)
         r=X*3.2406-Y*1.5372-Z*0.4986; g=-X*0.9689+Y*1.8758+Z*0.0415; b=X*0.0557-Y*0.2040+Z*1.0570
@@ -808,43 +915,70 @@ class HueEnhancedApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.resize(1280, 720)
-        self.hue_manager = HueManager()
+        self.settings = QSettings("HueController", "HueEnhanced")
         
         # Load settings: language and theme
         global current_language
-        current_language = self.hue_manager.get_setting('language', 'sv')
-        self.current_theme_name = self.hue_manager.get_setting('theme', 'Dracula') # Dracula as default
+        current_language = self.settings.value("language", "sv")
+        self.current_theme_name = self.settings.value("theme", "Dracula") # Dracula as default
 
         self.current_bridge = None; self.current_ip = None
         self.bridge_config = {}; self.theme_menu = None; self.lang_menu = None
+        
+        # Initialize bridge discovery thread
+        self.discovery_thread = BridgeDiscoveryThread()
+        self.discovery_thread.discovered.connect(self.handle_discovered_bridges)
+        self.discovery_thread.error.connect(self.handle_discovery_error)
         
         self.init_ui()
         self.create_menus()
         self.apply_styles() # Apply loaded theme
         self.update_ui_icons()
         
-        if self.hue_manager.bridges:
-            first_ip = next(iter(self.hue_manager.bridges))
-            self.bridge_selector.setCurrentText(first_ip)
+        # Load saved bridges
+        self.load_bridges()
+        
+        if self.bridge_selector.count() > 0:
+            self.bridge_selector.setCurrentIndex(0)
             if self.bridge_selector.currentIndex() == 0: self.handle_bridge_selection()
-        else: self.show_welcome_or_add_bridge()
+        else: 
+            self.show_welcome_or_add_bridge()
+            # Automatically start discovery if no bridges are configured
+            self.discover_bridges()
 
     def init_ui(self):
         self.central_widget = QWidget(); self.setCentralWidget(self.central_widget)
         self.main_layout = QVBoxLayout(self.central_widget)
+        
+        # Create toolbar for search
+        self.toolbar = QToolBar()
+        self.toolbar.setMovable(False)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
+        
+        # Add search box to toolbar
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText(tr("search"))
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self.filter_lists)
+        self.toolbar.addWidget(self.search_edit)
+        
         top_bar = QHBoxLayout()
         self.bridge_label = QLabel(tr("bridge"))
         top_bar.addWidget(self.bridge_label)
-        self.bridge_selector = QComboBox(); self.bridge_selector.addItems(self.hue_manager.bridges.keys())
+        self.bridge_selector = QComboBox()
         self.bridge_selector.currentIndexChanged.connect(self.handle_bridge_selection)
         top_bar.addWidget(self.bridge_selector, 1)
         self.add_bridge_btn = QPushButton(tr("add_bridge")); self.add_bridge_btn.clicked.connect(self.add_bridge_flow)
         top_bar.addWidget(self.add_bridge_btn)
+        self.discover_bridge_btn = QPushButton(tr("discover_bridges")); self.discover_bridge_btn.setIcon(icon_discover)
+        self.discover_bridge_btn.clicked.connect(self.discover_bridges)
+        top_bar.addWidget(self.discover_bridge_btn)
         self.remove_bridge_btn = QPushButton(tr("remove_bridge")); self.remove_bridge_btn.setObjectName("removeButton")
         self.remove_bridge_btn.clicked.connect(self.remove_selected_bridge)
         top_bar.addWidget(self.remove_bridge_btn); top_bar.addSpacing(20)
         self.refresh_btn = QPushButton(tr("reload")); self.refresh_btn.clicked.connect(self.refresh_all_from_bridge)
         top_bar.addWidget(self.refresh_btn); self.main_layout.addLayout(top_bar)
+        
         self.splitter = QSplitter(Qt.Orientation.Horizontal); self.list_tabs = QTabWidget()
         self.lights_list = QListWidget(); self.groups_list = QListWidget()
         self.scenes_tree = QTreeWidget(); self.scenes_tree.setHeaderHidden(True)
@@ -859,8 +993,51 @@ class HueEnhancedApp(QMainWindow):
 
         self.control_panel = ControlPanel(lambda: self.current_bridge, None)
         self.effects_panel = EffectsPanel(self.control_panel); self.control_panel.effects_panel = self.effects_panel
-        self.list_tabs.addTab(self.groups_list, tr("groups")); self.list_tabs.addTab(self.lights_list, tr("lights"))
-        self.list_tabs.addTab(self.scenes_tree, tr("scenes")); self.list_tabs.addTab(self.sensors_list, tr("sensors"))
+        
+        # Add search boxes to each tab
+        self.lights_search = QLineEdit()
+        self.lights_search.setPlaceholderText(tr("search"))
+        self.lights_search.textChanged.connect(self.filter_lights)
+        
+        self.groups_search = QLineEdit()
+        self.groups_search.setPlaceholderText(tr("search"))
+        self.groups_search.textChanged.connect(self.filter_groups)
+        
+        self.scenes_search = QLineEdit()
+        self.scenes_search.setPlaceholderText(tr("search"))
+        self.scenes_search.textChanged.connect(self.filter_scenes)
+        
+        self.sensors_search = QLineEdit()
+        self.sensors_search.setPlaceholderText(tr("search"))
+        self.sensors_search.textChanged.connect(self.filter_sensors)
+        
+        # Create widgets for each tab with search box
+        lights_widget = QWidget()
+        lights_layout = QVBoxLayout()
+        lights_layout.addWidget(self.lights_search)
+        lights_layout.addWidget(self.lights_list)
+        lights_widget.setLayout(lights_layout)
+        
+        groups_widget = QWidget()
+        groups_layout = QVBoxLayout()
+        groups_layout.addWidget(self.groups_search)
+        groups_layout.addWidget(self.groups_list)
+        groups_widget.setLayout(groups_layout)
+        
+        scenes_widget = QWidget()
+        scenes_layout = QVBoxLayout()
+        scenes_layout.addWidget(self.scenes_search)
+        scenes_layout.addWidget(self.scenes_tree)
+        scenes_widget.setLayout(scenes_layout)
+        
+        sensors_widget = QWidget()
+        sensors_layout = QVBoxLayout()
+        sensors_layout.addWidget(self.sensors_search)
+        sensors_layout.addWidget(self.sensors_list)
+        sensors_widget.setLayout(sensors_layout)
+        
+        self.list_tabs.addTab(groups_widget, tr("groups")); self.list_tabs.addTab(lights_widget, tr("lights"))
+        self.list_tabs.addTab(scenes_widget, tr("scenes")); self.list_tabs.addTab(sensors_widget, tr("sensors"))
         self.list_tabs.addTab(self.effects_panel, tr("effects"))
         self.splitter.addWidget(self.list_tabs); self.splitter.addWidget(self.control_panel)
         self.splitter.setSizes([480, 520]); self.main_layout.addWidget(self.splitter, 1)
@@ -870,7 +1047,8 @@ class HueEnhancedApp(QMainWindow):
         self.scenes_tree.itemClicked.connect(self.handle_scene_selection)
         self.sensors_list.itemClicked.connect(self.handle_sensor_selection)
 
-        self.refresh_btn.setEnabled(False); self.remove_bridge_btn.setEnabled(False); self.setStatusBar(QStatusBar(self))
+        self.refresh_btn.setEnabled(False); self.remove_bridge_btn.setEnabled(False); 
+        self.statusBar().showMessage(tr("status_ready"))
 
     def create_menus(self):
         self.menu_bar = self.menuBar()
@@ -902,13 +1080,19 @@ class HueEnhancedApp(QMainWindow):
         self.setWindowTitle(tr("app_title"))
         self.bridge_label.setText(tr("bridge"))
         self.add_bridge_btn.setText(tr("add_bridge"))
+        self.discover_bridge_btn.setText(tr("discover_bridges"))
         self.remove_bridge_btn.setText(tr("remove_bridge"))
         self.refresh_btn.setText(tr("reload"))
+        self.search_edit.setPlaceholderText(tr("search"))
+        self.lights_search.setPlaceholderText(tr("search"))
+        self.groups_search.setPlaceholderText(tr("search"))
+        self.scenes_search.setPlaceholderText(tr("search"))
+        self.sensors_search.setPlaceholderText(tr("search"))
         
-        self.list_tabs.setTabText(self.list_tabs.indexOf(self.groups_list), tr("groups"))
-        self.list_tabs.setTabText(self.list_tabs.indexOf(self.lights_list), tr("lights"))
-        self.list_tabs.setTabText(self.list_tabs.indexOf(self.scenes_tree), tr("scenes"))
-        self.list_tabs.setTabText(self.list_tabs.indexOf(self.sensors_list), tr("sensors"))
+        self.list_tabs.setTabText(self.list_tabs.indexOf(self.groups_list.parent().parent()), tr("groups"))
+        self.list_tabs.setTabText(self.list_tabs.indexOf(self.lights_list.parent().parent()), tr("lights"))
+        self.list_tabs.setTabText(self.list_tabs.indexOf(self.scenes_tree.parent().parent()), tr("scenes"))
+        self.list_tabs.setTabText(self.list_tabs.indexOf(self.sensors_list.parent().parent()), tr("sensors"))
         self.list_tabs.setTabText(self.list_tabs.indexOf(self.effects_panel), tr("effects"))
 
         # Menus
@@ -928,12 +1112,14 @@ class HueEnhancedApp(QMainWindow):
         
     def update_ui_icons(self):
         self.setWindowIcon(icon_light)
-        self.add_bridge_btn.setIcon(icon_add); self.remove_bridge_btn.setIcon(icon_remove)
+        self.add_bridge_btn.setIcon(icon_add); 
+        self.discover_bridge_btn.setIcon(icon_discover)
+        self.remove_bridge_btn.setIcon(icon_remove)
         self.refresh_btn.setIcon(icon_refresh)
-        self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.groups_list), icon_group)
-        self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.lights_list), icon_light)
-        self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.scenes_tree), icon_scene)
-        self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.sensors_list), icon_sensor)
+        self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.groups_list.parent().parent()), icon_group)
+        self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.lights_list.parent().parent()), icon_light)
+        self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.scenes_tree.parent().parent()), icon_scene)
+        self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.sensors_list.parent().parent()), icon_sensor)
         self.list_tabs.setTabIcon(self.list_tabs.indexOf(self.effects_panel), icon_effect)
 
     def apply_styles(self):
@@ -946,110 +1132,322 @@ class HueEnhancedApp(QMainWindow):
     def change_theme(self, name):
         if name in THEMES: 
             self.current_theme_name = name
-            self.hue_manager.save_setting('theme', name)
+            self.settings.setValue("theme", name)
             self.apply_styles()
 
     def change_language(self, lang_code):
         global current_language
         if lang_code in TRANSLATIONS:
             current_language = lang_code
-            self.hue_manager.save_setting('language', lang_code)
+            self.settings.setValue("language", lang_code)
             for action in self.lang_menu.actions():
                 action.setChecked(action.text().lower().startswith(lang_code))
             self.retranslate_ui()
 
-    def show_about_dialog(self): create_message_box(self, icon_info, tr("about"), tr("about_text")).exec()
-    def show_welcome_or_add_bridge(self): create_message_box(self, icon_info, tr("welcome_title"), tr("welcome_text")).exec()
+    def show_about_dialog(self): 
+        about_text = tr("about_text")
+        create_message_box(self, icon_info, tr("about"), about_text).exec()
+        
+    def show_welcome_or_add_bridge(self): 
+        create_message_box(self, icon_info, tr("welcome_title"), tr("welcome_text")).exec()
+        
+    def load_bridges(self):
+        """Load bridges from QSettings"""
+        size = self.settings.beginReadArray("bridges")
+        for i in range(size):
+            self.settings.setArrayIndex(i)
+            ip = self.settings.value("ip")
+            username = self.settings.value("username")
+            if ip and username:
+                self.bridge_selector.addItem(ip, username)
+        self.settings.endArray()
+        
+    def save_bridges(self):
+        """Save bridges to QSettings"""
+        self.settings.beginWriteArray("bridges")
+        for i in range(self.bridge_selector.count()):
+            self.settings.setArrayIndex(i)
+            ip = self.bridge_selector.itemText(i)
+            username = self.bridge_selector.itemData(i)
+            self.settings.setValue("ip", ip)
+            self.settings.setValue("username", username)
+        self.settings.endArray()
+        
+    def add_bridge(self, ip, username):
+        """Add a bridge to the selector and save it"""
+        self.bridge_selector.addItem(ip, username)
+        self.save_bridges()
+        
+    def remove_bridge(self, ip):
+        """Remove a bridge from the selector and save"""
+        index = self.bridge_selector.findText(ip)
+        if index >= 0:
+            self.bridge_selector.removeItem(index)
+            self.save_bridges()
+            
+    def discover_bridges(self):
+        """Start bridge discovery"""
+        self.statusBar().showMessage(tr("status_discovering"))
+        self.discovery_thread.start()
+        
+    def handle_discovered_bridges(self, bridges):
+        """Handle discovered bridges"""
+        if bridges:
+            msg = tr("discovery_found", count=len(bridges))
+            self.statusBar().showMessage(msg)
+            
+            # Ask user if they want to add any of the discovered bridges
+            bridge_text = "\n".join([f"• {ip}" for ip in bridges])
+            reply = create_message_box(
+                self, icon_info, tr("discovery_title"), 
+                f"{msg}:\n{bridge_text}\n\nWould you like to add one?",
+                buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ).exec()
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                # Let user choose which bridge to add
+                ip, ok = QInputDialog.getItem(
+                    self, tr("discovery_title"), 
+                    "Select a bridge to add:", 
+                    bridges, 0, False
+                )
+                if ok and ip:
+                    self._pair_bridge(ip)
+        else:
+            create_message_box(self, icon_info, tr("discovery_title"), tr("discovery_none")).exec()
+            self.statusBar().showMessage(tr("status_ready"))
+            
+    def handle_discovery_error(self, error):
+        """Handle discovery errors"""
+        logger.error(f"Bridge discovery error: {error}")
+        create_message_box(self, icon_error, tr("discovery_title"), tr("discovery_error", error=error)).exec()
+        self.statusBar().showMessage(tr("status_ready"))
+            
     def handle_bridge_selection(self):
         ip = self.bridge_selector.currentText()
-        if ip: self.connect_bridge(ip)
-        else: self.current_bridge=None; self.refresh_btn.setEnabled(False); self.remove_bridge_btn.setEnabled(False)
+        if ip: 
+            self.connect_bridge(ip)
+        else: 
+            self.current_bridge=None; 
+            self.refresh_btn.setEnabled(False); 
+            self.remove_bridge_btn.setEnabled(False)
+            
     def connect_bridge(self, ip):
-        username = self.hue_manager.bridges.get(ip, {}).get("username")
-        if not username: create_message_box(self, icon_error, tr("error_title"), f"Username missing for {ip}.").exec(); return
+        username = self.bridge_selector.currentData()
+        if not username: 
+            create_message_box(self, icon_error, tr("error_title"), f"Username missing for {ip}.").exec(); 
+            return
+            
         try:
+            self.statusBar().showMessage(tr("status_connecting", ip=ip))
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            bridge = Bridge(ip, username=username); api_info = bridge.get_api()
-            self.current_bridge = bridge; self.current_ip = ip; self.bridge_config = api_info.get('config', {})
+            bridge = Bridge(ip, username=username); 
+            api_info = bridge.get_api()
+            self.current_bridge = bridge; 
+            self.current_ip = ip; 
+            self.bridge_config = api_info.get('config', {})
             bridge_name = self.bridge_config.get('name', ip)
             self.setWindowTitle(tr("app_title_connected", bridge_name=bridge_name))
             self.statusBar().showMessage(tr("status_connected", bridge_name=bridge_name))
-            self.refresh_btn.setEnabled(True); self.remove_bridge_btn.setEnabled(True)
+            self.refresh_btn.setEnabled(True); 
+            self.remove_bridge_btn.setEnabled(True)
             self.refresh_all_from_bridge()
-        except Exception as e: create_message_box(self, icon_error, tr("error_title"), f"Could not connect to {ip}:\n{e}").exec()
-        finally: QApplication.restoreOverrideCursor()
+        except Exception as e: 
+            logger.error(f"Could not connect to bridge {ip}: {e}")
+            create_message_box(self, icon_error, tr("error_title"), f"Could not connect to {ip}:\n{e}").exec()
+        finally: 
+            QApplication.restoreOverrideCursor()
+            
     def add_bridge_flow(self):
         ip, ok = QInputDialog.getText(self, tr("add_bridge_title"), tr("add_bridge_prompt"))
         if ok and ip:
-            try:
-                temp_bridge = Bridge(ip)
-                if create_message_box(self, icon_info, tr("press_button_title"), tr("press_button_prompt", ip=ip), buttons=QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel).exec() == QMessageBox.StandardButton.Ok:
-                    temp_bridge.connect(); self.hue_manager.add_bridge(ip, temp_bridge.username)
-                    self.bridge_selector.addItem(ip); self.bridge_selector.setCurrentText(ip)
-            except Exception as e: create_message_box(self, icon_error, tr("error_title"), tr("pair_fail_prompt", ip=ip, e=e)).exec()
+            self._pair_bridge(ip)
+            
+    def _pair_bridge(self, ip):
+        """Handle the bridge pairing process"""
+        try:
+            temp_bridge = Bridge(ip)
+            if create_message_box(
+                self, icon_info, tr("press_button_title"), 
+                tr("press_button_prompt", ip=ip), 
+                buttons=QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+            ).exec() == QMessageBox.StandardButton.Ok:
+                temp_bridge.connect()
+                self.add_bridge(ip, temp_bridge.username)
+                self.bridge_selector.setCurrentText(ip)
+        except Exception as e: 
+            logger.error(f"Pairing failed with {ip}: {e}")
+            create_message_box(self, icon_error, tr("error_title"), tr("pair_fail_prompt", ip=ip, e=e)).exec()
+            
     def remove_selected_bridge(self):
         ip = self.bridge_selector.currentText()
-        if ip and create_message_box(self, icon_warning, tr("confirm_title"), tr("remove_bridge_prompt", ip=ip), buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No).exec() == QMessageBox.StandardButton.Yes:
-            self.hue_manager.remove_bridge(ip); self.bridge_selector.removeItem(self.bridge_selector.currentIndex())
+        if ip and create_message_box(
+            self, icon_warning, tr("confirm_title"), 
+            tr("remove_bridge_prompt", ip=ip), 
+            buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ).exec() == QMessageBox.StandardButton.Yes:
+            self.remove_bridge(ip)
 
-    def clear_lists(self): self.lights_list.clear(); self.groups_list.clear(); self.scenes_tree.clear(); self.sensors_list.clear()
+    def clear_lists(self): 
+        self.lights_list.clear(); 
+        self.groups_list.clear(); 
+        self.scenes_tree.clear(); 
+        self.sensors_list.clear()
 
     def refresh_all_from_bridge(self):
         if not self.current_bridge: return
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor); self.clear_lists(); self.control_panel.update_display(None, None); QApplication.processEvents()
+        
+        # Show progress dialog for long operation
+        progress = QProgressDialog(tr("status_loading"), "Cancel", 0, 100, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setValue(0)
+        
         try:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            self.clear_lists(); 
+            self.control_panel.update_display(None, None); 
+            QApplication.processEvents()
+            progress.setValue(10)
+            
             if self.bridge_config:
                 bridge_name = self.bridge_config.get('name', self.current_ip)
                 bridge_item = QListWidgetItem(icon_bridge, f"Bridge: {bridge_name} ({self.current_ip})")
-                bridge_item.setData(Qt.ItemDataRole.UserRole, ("bridge", self.bridge_config)); self.sensors_list.addItem(bridge_item)
+                bridge_item.setData(Qt.ItemDataRole.UserRole, ("bridge", self.bridge_config)); 
+                self.sensors_list.addItem(bridge_item)
+            progress.setValue(20)
             
             lights = sorted(self.current_bridge.get_light_objects('list'), key=lambda l: l.name.lower())
-            for l in lights: item = QListWidgetItem(icon_light, l.name); item.setData(Qt.ItemDataRole.UserRole, ("light", l)); self.lights_list.addItem(item)
+            for l in lights: 
+                item = QListWidgetItem(icon_light, l.name); 
+                item.setData(Qt.ItemDataRole.UserRole, ("light", l)); 
+                self.lights_list.addItem(item)
+            progress.setValue(40)
             
             groups = sorted([g for g in self.current_bridge.groups if g.group_id != 0], key=lambda g: g.name.lower())
-            for g in groups: item = QListWidgetItem(icon_group, g.name); item.setData(Qt.ItemDataRole.UserRole, ("group", g)); self.groups_list.addItem(item)
+            for g in groups: 
+                item = QListWidgetItem(icon_group, g.name); 
+                item.setData(Qt.ItemDataRole.UserRole, ("group", g)); 
+                self.groups_list.addItem(item)
+            progress.setValue(60)
             
-            scenes = self.current_bridge.get_scene(); scenes_by_group = {}; other_scenes = []
+            scenes = self.current_bridge.get_scene(); 
+            scenes_by_group = {}; 
+            other_scenes = []
             group_names = {str(g.group_id): g.name for g in self.current_bridge.groups}
             for sid, sdata in scenes.items():
-                gid = sdata.get('group'); s_tuple = (sid, sdata.get("name", f"Scene {sid}"), sdata)
-                if gid and gid in group_names: scenes_by_group.setdefault(gid, []).append(s_tuple)
-                else: other_scenes.append(s_tuple)
+                gid = sdata.get('group'); 
+                s_tuple = (sid, sdata.get("name", f"Scene {sid}"), sdata)
+                if gid and gid in group_names: 
+                    scenes_by_group.setdefault(gid, []).append(s_tuple)
+                else: 
+                    other_scenes.append(s_tuple)
+            progress.setValue(80)
             
             for gid in sorted(scenes_by_group.keys(), key=lambda g: group_names.get(g, '').lower()):
-                group_item = QTreeWidgetItem(self.scenes_tree, [group_names.get(gid, f"Group {gid}")]); group_item.setIcon(0, icon_group)
+                group_item = QTreeWidgetItem(self.scenes_tree, [group_names.get(gid, f"Group {gid}")]); 
+                group_item.setIcon(0, icon_group)
                 for sid, sname, sdata in sorted(scenes_by_group[gid], key=lambda s: s[1].lower()):
-                    scene_item = QTreeWidgetItem(group_item, [sname]); scene_item.setIcon(0, icon_scene); scene_item.setData(0, Qt.ItemDataRole.UserRole, ("scene", sid))
+                    scene_item = QTreeWidgetItem(group_item, [sname]); 
+                    scene_item.setIcon(0, icon_scene); 
+                    scene_item.setData(0, Qt.ItemDataRole.UserRole, ("scene", sid))
             if other_scenes:
-                other_item = QTreeWidgetItem(self.scenes_tree, [tr("other_scenes")]); other_item.setIcon(0, icon_scene)
+                other_item = QTreeWidgetItem(self.scenes_tree, [tr("other_scenes")]); 
+                other_item.setIcon(0, icon_scene)
                 for sid, sname, sdata in sorted(other_scenes, key=lambda s: s[1].lower()):
-                    scene_item = QTreeWidgetItem(other_item, [sname]); scene_item.setIcon(0, icon_scene); scene_item.setData(0, Qt.ItemDataRole.UserRole, ("scene", sid))
+                    scene_item = QTreeWidgetItem(other_item, [sname]); 
+                    scene_item.setIcon(0, icon_scene); 
+                    scene_item.setData(0, Qt.ItemDataRole.UserRole, ("scene", sid))
             self.scenes_tree.expandAll()
+            progress.setValue(90)
 
             sensors = sorted(self.current_bridge.get_sensor_objects('list'), key=lambda s: s.name.lower())
             for sensor in sensors:
-                stext = sensor.name; item_icon = icon_sensor; add = False; tooltip = f"ID: {sensor.sensor_id}\nType: {sensor.type}\nModel: {sensor.modelid}"
+                stext = sensor.name; 
+                item_icon = icon_sensor; 
+                add = False; 
+                tooltip = f"ID: {sensor.sensor_id}\nType: {sensor.type}\nModel: {sensor.modelid}"
                 if sensor.type == 'ZLLTemperature' and 'temperature' in sensor.state:
-                    stext += f": {sensor.state['temperature']/100.0:.1f}°C"; add = True
+                    stext += f": {sensor.state['temperature']/100.0:.1f}°C"; 
+                    add = True
                 elif sensor.type == 'ZLLPresence' and 'presence' in sensor.state:
-                    stext += f": {'Motion' if sensor.state['presence'] else 'No motion'}"; add = True
+                    stext += f": {'Motion' if sensor.state['presence'] else 'No motion'}"; 
+                    add = True
                 elif sensor.type == 'ZLLSwitch':
-                    item_icon = icon_dimmer; add = True
+                    item_icon = icon_dimmer; 
+                    add = True
                 if add:
-                    item = QListWidgetItem(item_icon, stext); item.setData(Qt.ItemDataRole.UserRole, ("sensor", sensor)); item.setToolTip(tooltip); self.sensors_list.addItem(item)
+                    item = QListWidgetItem(item_icon, stext); 
+                    item.setData(Qt.ItemDataRole.UserRole, ("sensor", sensor)); 
+                    item.setToolTip(tooltip); 
+                    self.sensors_list.addItem(item)
+            progress.setValue(100)
 
-        except Exception as e: create_message_box(self, icon_error, tr("error_title"), f"Could not load data:\n{e}").exec()
-        finally: QApplication.restoreOverrideCursor()
+        except Exception as e: 
+            logger.error(f"Could not load data from bridge: {e}")
+            create_message_box(self, icon_error, tr("error_title"), f"Could not load data:\n{e}").exec()
+        finally: 
+            QApplication.restoreOverrideCursor()
+            progress.close()
+
+    def filter_lists(self, text):
+        """Filter all lists based on search text"""
+        self.filter_lights(text)
+        self.filter_groups(text)
+        self.filter_scenes(text)
+        self.filter_sensors(text)
+        
+    def filter_lights(self, text):
+        """Filter lights list based on search text"""
+        for i in range(self.lights_list.count()):
+            item = self.lights_list.item(i)
+            item.setHidden(text.lower() not in item.text().lower())
+            
+    def filter_groups(self, text):
+        """Filter groups list based on search text"""
+        for i in range(self.groups_list.count()):
+            item = self.groups_list.item(i)
+            item.setHidden(text.lower() not in item.text().lower())
+            
+    def filter_scenes(self, text):
+        """Filter scenes tree based on search text"""
+        def filter_tree_item(item, text):
+            hidden = text and text.lower() not in item.text(0).lower()
+            item.setHidden(0, hidden)
+            
+            # Show parent if any child is visible
+            for i in range(item.childCount()):
+                child = item.child(i)
+                if not filter_tree_item(child, text):
+                    hidden = False
+                    
+            item.setHidden(0, hidden)
+            return hidden
+            
+        for i in range(self.scenes_tree.topLevelItemCount()):
+            item = self.scenes_tree.topLevelItem(i)
+            filter_tree_item(item, text)
+            
+    def filter_sensors(self, text):
+        """Filter sensors list based on search text"""
+        for i in range(self.sensors_list.count()):
+            item = self.sensors_list.item(i)
+            item.setHidden(text.lower() not in item.text().lower())
 
     def handle_light_selection(self, item):
         if item: self.control_panel.update_display('light', item.data(Qt.ItemDataRole.UserRole)[1])
+        
     def handle_group_selection(self, item):
         if item: self.control_panel.update_display('group', item.data(Qt.ItemDataRole.UserRole)[1])
+        
     def handle_scene_selection(self, item, column):
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if data and data[0] == 'scene': self.activate_scene(data[1], item.text(0))
+        
     def handle_sensor_selection(self, item):
-        if item: print(f"Selected sensor: {item.text()}")
+        if item: 
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if data and data[0] == 'sensor':
+                logger.info(f"Selected sensor: {item.text()}")
 
     def activate_scene(self, scene_id, scene_name):
         if not self.current_bridge: return
@@ -1057,6 +1455,7 @@ class HueEnhancedApp(QMainWindow):
             self.current_bridge.set_group(0, 'scene', scene_id)
             QTimer.singleShot(500, lambda: self.control_panel.update_display(self.control_panel.target_type, self.control_panel.current_target) if self.control_panel.current_target else None)
         except Exception as e:
+            logger.error(f"Could not activate scene {scene_name}: {e}")
             create_message_box(self, icon_error, tr("error_title"), f"Could not activate scene '{scene_name}':\n{e}").exec()
 
     def show_light_context_menu(self, position):
@@ -1107,7 +1506,9 @@ class HueEnhancedApp(QMainWindow):
             details = json.dumps(info, indent=4, ensure_ascii=False)
             msg_box = create_message_box(self, icon_info, f"Info: {info.get('name', 'Unknown')}", details)
             msg_box.layout().itemAt(0).widget().setMinimumWidth(400); msg_box.exec()
-        except Exception as e: create_message_box(self, icon_error, tr("error_title"), f"Could not fetch info:\n{e}").exec()
+        except Exception as e: 
+            logger.error(f"Could not fetch device info: {e}")
+            create_message_box(self, icon_error, tr("error_title"), f"Could not fetch info:\n{e}").exec()
     
     def show_bridge_info_dialog(self, bridge_config):
          details = json.dumps(bridge_config, indent=4, ensure_ascii=False)
@@ -1120,8 +1521,13 @@ class HueEnhancedApp(QMainWindow):
         if dialog.exec():
             name, light_ids = dialog.get_selected_data()
             if not name: create_message_box(self, icon_warning, tr("warning_title"), tr("no_name_warning")).exec(); return
-            try: self.current_bridge.create_group(name, light_ids); self.refresh_all_from_bridge()
-            except Exception as e: create_message_box(self, icon_error, tr("error_title"), tr("create_group_fail", e=e)).exec()
+            try: 
+                self.current_bridge.create_group(name, light_ids); 
+                self.refresh_all_from_bridge()
+            except Exception as e: 
+                logger.error(f"Could not create group: {e}")
+                create_message_box(self, icon_error, tr("error_title"), tr("create_group_fail", e=e)).exec()
+                
     def edit_group(self, item):
         if not self.current_bridge or not item: return
         _, group_obj = item.data(Qt.ItemDataRole.UserRole)
@@ -1129,14 +1535,28 @@ class HueEnhancedApp(QMainWindow):
         if dialog.exec():
             name, light_ids = dialog.get_selected_data()
             if not name: create_message_box(self, icon_warning, tr("warning_title"), tr("no_name_warning")).exec(); return
-            try: self.current_bridge.set_group(group_obj.group_id, {'name': name, 'lights': light_ids}); self.refresh_all_from_bridge()
-            except Exception as e: create_message_box(self, icon_error, tr("error_title"), tr("edit_group_fail", e=e)).exec()
+            try: 
+                self.current_bridge.set_group(group_obj.group_id, {'name': name, 'lights': light_ids}); 
+                self.refresh_all_from_bridge()
+            except Exception as e: 
+                logger.error(f"Could not edit group: {e}")
+                create_message_box(self, icon_error, tr("error_title"), tr("edit_group_fail", e=e)).exec()
+                
     def delete_group(self, item):
         if not self.current_bridge or not item: return
         _, group_obj = item.data(Qt.ItemDataRole.UserRole)
-        if create_message_box(self, icon_warning, tr("confirm_title"), tr("delete_group_prompt", group_name=group_obj.name), buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No).exec() == QMessageBox.StandardButton.Yes:
-            try: self.current_bridge.delete_group(group_obj.group_id); self.refresh_all_from_bridge()
-            except Exception as e: create_message_box(self, icon_error, tr("error_title"), tr("delete_group_fail", e=e)).exec()
+        if create_message_box(
+            self, icon_warning, tr("confirm_title"), 
+            tr("delete_group_prompt", group_name=group_obj.name), 
+            buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ).exec() == QMessageBox.StandardButton.Yes:
+            try: 
+                self.current_bridge.delete_group(group_obj.group_id); 
+                self.refresh_all_from_bridge()
+            except Exception as e: 
+                logger.error(f"Could not delete group: {e}")
+                create_message_box(self, icon_error, tr("error_title"), tr("delete_group_fail", e=e)).exec()
+                
     def save_group_as_scene(self, item):
         if not self.current_bridge or not item: return
         _, group_obj = item.data(Qt.ItemDataRole.UserRole)
@@ -1144,10 +1564,11 @@ class HueEnhancedApp(QMainWindow):
         if ok and scene_name:
             try:
                 result = self.current_bridge.create_group_scene(group_obj.group_id, scene_name)
-                print(f"Result from create_group_scene: {result}")
+                logger.info(f"Result from create_group_scene: {result}")
                 create_message_box(self, icon_info, tr("info_title"), tr("save_scene_success", scene_name=scene_name)).exec()
                 self.refresh_all_from_bridge()
             except Exception as e:
+                logger.error(f"Could not save scene: {e}")
                 create_message_box(self, icon_error, tr("error_title"), tr("save_scene_fail", e=e)).exec()
 
 if __name__ == "__main__":
@@ -1161,3 +1582,4 @@ if __name__ == "__main__":
     window = HueEnhancedApp()
     window.show()
     sys.exit(app.exec())
+
