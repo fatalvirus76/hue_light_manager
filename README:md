@@ -1,0 +1,49 @@
+# 💡 Enhanced Hue Controller
+
+An advanced desktop application for controlling **Philips Hue** lights, built with **Python** and **PyQt6**.  
+This controller offers a rich user interface to manage your entire Hue lighting system — from individual lights to complex scenes and dynamic effects. ✨
+
+---
+
+## 🚀 Features
+
+- **Comprehensive Control**  
+  Manage individual lights, groups, and rooms. Control power state (on/off), brightness, and color.  
+
+- **🎭 Dynamic Effects**  
+  Bring your rooms to life with a variety of dynamic effects, including:  
+  - 🕯️ Candlelight & Fireplace  
+  - ⛈️ Thunderstorm  
+  - 🌈 Color Loop & Rainbow  
+  - 🎶 Disco & Police Siren  
+  - ...and many more!  
+
+- **🎨 Scene Management**  
+  Easily activate predefined scenes, or save the current state of a group as a new scene directly from the application.  
+
+- **🌉 Multi-Bridge Support**  
+  Add and switch between multiple Hue Bridges, perfect for complex setups.  
+
+- **🎨 Customizable Interface**  
+  Choose from built-in themes such as:  
+  - Dracula (default) 🧛  
+  - Nord Dark ❄️  
+  - Light ☀️  
+
+- **🌍 Multi-Language Support**  
+  Available in **English** and **Swedish**.  
+
+- **💾 Persistent Settings**  
+  Your last used theme, language, and bridge connections are saved and auto-loaded on startup.  
+
+- **⭐ Favorite Colors**  
+  Save and quickly apply up to five of your favorite colors.  
+
+---
+
+## 📦 Dependencies
+
+To run this application, you need **Python 3** installed along with the following libraries:  
+
+```bash
+pip install PyQt6 phue requests
